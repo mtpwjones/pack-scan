@@ -36,17 +36,24 @@
   function findExpiry(text) {
     var t = text, m, key = '(?:exp(?:iry|ires)?\\.?|use by|best before|bb|ex|до|придатн[а-я]* до|годен до|date de p[eé]remption|p[eé]remption|per\\.?)';
     var res = [
-      [new RegExp(key + '\\s*[:.]?\\s*(\\d{1,2})\\s*[\\/.\\- ]\\s*(\\d{4}|\\d{2})\\b', 'i'), function (a) { return [fixYear(a[2]), +a[1]]; }],
-      [new RegExp(key + '\\s*[:.]?\\s*(\\d{4})\\s*[\\/.\\-]\\s*(\\d{1,2})\\b', 'i'), function (a) { return [+a[1], +a[2]]; }],
-      [new RegExp(key + '\\s*[:.]?\\s*([a-zéû]{3,5})\\.?\\s*[\\/.\\- ]?\\s*(\\d{4}|\\d{2})\\b', 'i'), function (a) { var mo = MONTHS[a[1].toLowerCase()]; return mo ? [fixYear(a[2]), mo] : null; }],
-      [/\b(\d{1,2})\s*[\/.]\s*(20\d{2})\b/, function (a) { return [+a[2], +a[1]]; }],
-      [/\b(20\d{2})\s*[\/.\-]\s*(\d{1,2})\b/, function (a) { return [+a[1], +a[2]]; }]
+      [new RegExp(key + '[ \\t]*[:.]?[ \\t]*(\\d{1,2})[ \\t]*[\\/.\\- ][ \\t]*(\\d{4}|\\d{2})\\b', 'i'), function (a) { return [fixYear(a[2]), +a[1]]; }],
+      [new RegExp(key + '[ \\t]*[:.]?[ \\t]*(\\d{4})[ \\t]*[\\/.\\-][ \\t]*(\\d{1,2})\\b', 'i'), function (a) { return [+a[1], +a[2]]; }],
+      [new RegExp(key + '[ \\t]*[:.]?[ \\t]*([a-zéû]{3,5})\\.?[ \\t]*[\\/.\\- ]?[ \\t]*(\\d{4}|\\d{2})\\b', 'i'), function (a) { var mo = MONTHS[a[1].toLowerCase()]; return mo ? [fixYear(a[2]), mo] : null; }]
     ];
     for (var i = 0; i < res.length; i++) {
       m = t.match(res[i][0]); if (!m) continue;
       var ym = res[i][1](m); if (!ym || ym[1] < 1 || ym[1] > 12) continue;
       return { iso: endOfMonth(ym[0], ym[1]), matched: m[0] };
     }
+    // No keyword beside a date: gather month/year pairs (the box often prints the keyword on its own line). Skip pairs labelled as made.
+    var re = /(?:^|[^\d])(0?[1-9]|1[0-2])[ \t]*[\/.\- ][ \t]*(20\d{2})(?!\d)|(?:^|[^\d])(20\d{2})[ \t]*[\/.\-][ \t]*(0?[1-9]|1[0-2])(?!\d)/g, found = [], mm;
+    while ((mm = re.exec(t))) {
+      var y = mm[2] ? +mm[2] : +mm[3], mo = mm[2] ? +mm[1] : +mm[4];
+      var lineStart = t.lastIndexOf('\n', mm.index) + 1, before = t.slice(lineStart, mm.index + 1).toLowerCase();
+      if (/(fab|mfg|mfd|prod|made|fabr|manuf)/.test(before)) continue;
+      found.push({ y: y, mo: mo, matched: mm[0].replace(/^[^\d]/, '') });
+    }
+    if (found.length) { found.sort(function (p, q) { return (q.y * 12 + q.mo) - (p.y * 12 + p.mo); }); return { iso: endOfMonth(found[0].y, found[0].mo), matched: found[0].matched }; }
     return null;
   }
 
@@ -54,14 +61,28 @@
     var raw = String(text || ''), work = ' ' + raw + ' ', out = { raw: raw, expiry: null, lot: null, dose: null, packCount: null, packUnit: null, packClass: '', nameWords: [] };
     var ex = findExpiry(raw); if (ex) { out.expiry = ex.iso; work = work.replace(ex.matched, ' '); }
     var lot = work.match(/(?:lot|batch|серія|партія|lot n[°o]|ser\.)\s*[:#.]?\s*([A-Za-z0-9][A-Za-z0-9\-\/]{2,19})/i);
+    if (lot && /^(fab|exp|mfg|cip|date)/i.test(lot[1])) lot = null;
+    if (lot && /^(19|20)\d{2}$/.test(lot[1])) lot = null;
     if (lot) { out.lot = lot[1].toUpperCase(); work = work.replace(lot[0], ' '); }
     var dm = work.match(new RegExp('(\\d+(?:[.,]\\d+)?(?:\\s*\\/\\s*\\d+(?:[.,]\\d+)?)?)\\s*(' + DOSE_UNIT + '(?:\\s*\\/\\s*' + DOSE_UNIT + ')?)(?![a-zа-яіїє])', 'i'));
     if (dm) { out.dose = (dm[1].replace(/\s+/g, '') + dm[2].replace(/\s+/g, '')).replace(',', '.'); work = work.replace(dm[0], ' '); }
-    for (var i = 0; i < COUNT_UNITS.length && out.packCount === null; i++) {
-      var cm = work.match(new RegExp('(?:^|[^\\d.,])(\\d{1,4})\\s*(?:film[- ]coated\\s+|coated\\s+|film[- ]coated\\s+)?(' + COUNT_UNITS[i][0] + ')(?![a-zа-яіїє])', 'i'));
-      if (cm) { out.packCount = +cm[1]; out.packUnit = cm[2]; out.packClass = COUNT_UNITS[i][1]; work = work.replace(cm[0], ' '); }
+    var toks = work.split(/\s+/).filter(Boolean), k, j, m2;
+    for (k = 0; k < toks.length && out.packCount === null; k++) {
+      var w = toks[k].replace(/[.,;:)(]+$/, '').replace(/^[(]+/, ''), cls = null;
+      for (var u = 0; u < COUNT_UNITS.length && !cls; u++) if (new RegExp('^(?:' + COUNT_UNITS[u][0] + ')$', 'i').test(w)) cls = COUNT_UNITS[u][1];
+      if (!cls) { m2 = w.match(new RegExp('^(\\d{1,4})(' + COUNT_UNITS.map(function (c) { return c[0]; }).join('|') + ')$', 'i')); if (m2) { out.packCount = +m2[1]; out.packUnit = m2[2]; out.packClass = unitClass(m2[2]); toks.splice(k, 1); } continue; }
+      for (j = k - 1; j >= 0 && j >= k - 7; j--) {
+        var tj = toks[j].replace(/[.,;:)(]+$/, '');
+        if (/^\d{1,4}$/.test(tj)) {
+          var adjacent = j === k - 1, multi = tj.length >= 2, clear = true;
+          for (var q = j + 1; q < k; q++) if (/^\d{2,4}$/.test(toks[q])) clear = false;
+          if (adjacent || (multi && clear)) { out.packCount = +tj; out.packUnit = toks[k].replace(/[.,;:)(]+$/, ''); out.packClass = cls; toks.splice(k, 1); toks.splice(j, 1); break; }
+          if (multi) break;
+        }
+      }
     }
-    out.nameWords = tokens(work);
+    work = ' ' + toks.join(' ') + ' ';
+    var seen = {}; out.nameWords = tokens(work).map(function (w) { return w.replace(/[.%]+$/, ''); }).filter(function (w) { if (seen[w] || w.length < 4 || /\d/.test(w) || /^(film|coated|tablets?|tabs?|capsules?|each|contains|exp|expiry|lot|batch|fab|cip)$/.test(w)) return false; seen[w] = 1; return true; }).slice(0, 6);
     return out;
   }
 

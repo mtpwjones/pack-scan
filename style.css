@@ -33,3 +33,6 @@ h3{font-size:.95rem;margin:12px 0 6px}
 .warn{background:var(--warn);color:var(--warnfg);border-radius:8px;padding:8px 10px;margin:8px 0;font-size:.88rem}
 label.check{flex-direction:row;align-items:center;gap:8px;margin-top:8px}label.check input{width:auto;min-height:0}
 .src{display:block;font-weight:400;color:var(--mute);font-size:.75rem}
+.btn.primary{background:var(--acc);color:var(--accfg);border-color:var(--acc);font-weight:600}
+.enter{border:2px solid var(--acc);border-radius:10px;padding:10px 12px;margin:10px 0}.enterhead{font-weight:700;margin-bottom:6px}
+.enterrow{display:flex;gap:8px;align-items:center;margin:6px 0}.enterrow .k{width:56px;color:var(--mute);font-size:.85rem}.enterrow .v{flex:1;font-weight:700;word-break:break-word}

@@ -34,16 +34,27 @@
   </section>
 
   <section id="paneText" class="card" hidden>
-    <label>Type or paste what is on the box
-      <textarea id="freeText" rows="3" placeholder="e.g. Sertraline 50 mg, 28 tablets, exp 03/2029, lot KV033"></textarea>
+    <div class="row">
+      <label class="btn primary" for="textPhoto">Take photo of the box<input id="textPhoto" type="file" accept="image/*" capture="environment" hidden></label>
+      <label class="btn" for="textChoose">Choose image<input id="textChoose" type="file" accept="image/*" hidden></label>
+    </div>
+    <p class="hint">The app reads the printed text on the photo. Hold the phone close and square to the part with the name, then take a second photo of the flap with the expiry. Check what it read below, correct any mistakes, then press Read text.</p>
+    <label>What was read (or type it yourself)
+      <textarea id="freeText" rows="4" placeholder="e.g. Sertraline 50 mg, 28 tablets, exp 03/2029, lot KV033"></textarea>
     </label>
-    <div class="row"><button id="btnParse" class="primary" type="button">Read text</button></div>
+    <div class="row"><button id="btnParse" class="primary" type="button">Read text</button><button id="btnTextClear" type="button">Clear text</button></div>
   </section>
 
   <p id="status" class="status" role="status">Ready.</p>
 
   <section id="result" class="card" hidden>
     <div class="row between"><h2>Identified</h2><span id="resBadge" class="badge"></span></div>
+    <div id="enterBox" class="enter" hidden>
+      <div class="enterhead">Enter into MedTrack</div>
+      <div class="enterrow"><span class="k">Name</span><span id="enName" class="v"></span><button id="cpName" type="button">Copy</button></div>
+      <div class="enterrow"><span class="k">Expiry</span><span id="enExp" class="v"></span><button id="cpExp" type="button">Copy</button></div>
+      <div class="row"><button id="cpBoth" type="button">Copy both</button></div>
+    </div>
     <table class="kv" id="idTable"></table>
     <div id="warns"></div>
 

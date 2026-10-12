@@ -139,7 +139,7 @@
   function startCur(kind) { return { kind: kind, gs: null, tx: null, label: null, labelSrc: '', code: '', expiry: '', expirySrc: '', lot: '', serial: '', cands: [], raw: '' }; }
 
   function typedName(c) { return c.tx && c.tx.nameWords.length ? c.tx.nameWords.join(' ') : ''; }
-  function medName(c) { return c.label ? c.label.name : typedName(c); }
+  function medName(c) { return c.label ? c.label.name : (LIST.length ? '' : typedName(c)); }
   function doseOf(c) { return c.label && c.label.dose ? c.label.dose : (c.tx && c.tx.dose) || ''; }
   function packOf(c) { return c.label && packText(c.label) ? packText(c.label) : (c.tx && c.tx.packCount !== null ? c.tx.packCount + ' ' + (c.tx.packUnit || '') : ''); }
 
@@ -154,6 +154,11 @@
     if (c.lot) row(tbl, 'Lot', c.lot);
     if (c.serial) row(tbl, 'Serial number', c.serial, 'unique to this box');
     if (c.code) row(tbl, 'Product code', c.code, c.gs && c.gs.codeLabel ? c.gs.codeLabel : (c.gs && c.gs.kind === 'gs1' ? 'GS1 data code' : ''));
+
+    var en = enterName(), ex = enterExp();
+    $('enterBox').hidden = !(en || ex);
+    $('enName').textContent = en || 'not identified'; $('enExp').textContent = ex || 'not found';
+    $('cpName').disabled = !en; $('cpExp').disabled = !ex; $('cpBoth').disabled = !(en && ex);
 
     // warnings
     var w = $('warns'); w.textContent = '';
@@ -289,6 +294,84 @@
     var b = $('btnClear'); if (b.dataset.sure !== '1') { b.dataset.sure = '1'; b.textContent = 'Tap again to clear'; setTimeout(function () { b.dataset.sure = ''; b.textContent = 'Clear'; }, 3000); return; }
     lsSet(LS_LOG, []); renderLog(); b.dataset.sure = ''; b.textContent = 'Clear';
   });
+
+  /* ---------- reading text from a photo (on-device, tesseract.js) ---------- */
+  var ocrWorker = null, ocrLoading = null;
+  function loadScript(src) { return new Promise(function (res, rej) { var s = document.createElement('script'); s.src = src; s.onload = res; s.onerror = function () { rej(new Error('could not load ' + src)); }; document.head.appendChild(s); }); }
+  function abs(p) { return new URL(p, location.href).href.replace(/\/$/, ''); }
+  async function getOcr() {
+    if (ocrWorker) return ocrWorker;
+    if (!ocrLoading) ocrLoading = (async function () {
+      if (!window.Tesseract) await loadScript('vendor/tesseract/tesseract.min.js');
+      ocrWorker = await Tesseract.createWorker('eng', 1, { workerPath: abs('vendor/tesseract/worker.min.js'), corePath: abs('vendor/tesseract'), langPath: abs('vendor/tesseract/lang'), gzip: false, cacheMethod: 'none' });
+      return ocrWorker;
+    })();
+    return ocrLoading;
+  }
+  function prepCanvas(bmp, targetLong, sx, sy, sw, sh) {
+    sx = sx || 0; sy = sy || 0; sw = sw || bmp.width; sh = sh || bmp.height;
+    var scale = targetLong / Math.max(sw, sh); scale = Math.min(scale, 3);
+    var w = Math.round(sw * scale), h = Math.round(sh * scale), c = document.createElement('canvas'); c.width = w; c.height = h;
+    var ctx = c.getContext('2d', { willReadFrequently: true }); ctx.drawImage(bmp, sx, sy, sw, sh, 0, 0, w, h);
+    var id = ctx.getImageData(0, 0, w, h), d = id.data, hist = new Array(256).fill(0), i, g;
+    for (i = 0; i < d.length; i += 4) { g = Math.round(0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]); d[i] = d[i + 1] = d[i + 2] = g; hist[g]++; }
+    var tot = w * h, lo = 0, hi = 255, acc = 0;
+    for (i = 0; i < 256; i++) { acc += hist[i]; if (acc > tot * 0.01) { lo = i; break; } }
+    acc = 0; for (i = 255; i >= 0; i--) { acc += hist[i]; if (acc > tot * 0.01) { hi = i; break; } }
+    var rng = Math.max(1, hi - lo);
+    for (i = 0; i < d.length; i += 4) { g = Math.max(0, Math.min(255, Math.round((d[i] - lo) * 255 / rng))); d[i] = d[i + 1] = d[i + 2] = g; }
+    ctx.putImageData(id, 0, 0); return c;
+  }
+  function mergeLines(chunks) {
+    var seen = {}, out = [];
+    chunks.join('\n').split(/\r?\n/).forEach(function (l) {
+      l = l.replace(/[|_~]+/g, ' ').replace(/\s+/g, ' ').trim(); if (l.length < 3 || !/[A-Za-z0-9]{2}/.test(l)) return;
+      var k = l.toLowerCase().replace(/[^a-z0-9]/g, ''); if (!k || seen[k]) return; seen[k] = 1; out.push(l);
+    });
+    return out;
+  }
+  async function ocrFile(file) {
+    setStatus('Starting the text reader (the first time it loads about 8 MB)…');
+    var w = await getOcr(), bmp = await createImageBitmap(file), chunks = [];
+    var pass = async function (canvas, psm) { await w.setParameters({ tessedit_pageseg_mode: String(psm) }); var r = await w.recognize(canvas); var lines = (r.data.lines && r.data.lines.length) ? r.data.lines.filter(function (l) { return l.confidence >= 55; }).map(function (l) { return l.text; }) : [r.data.text]; chunks.push(lines.join('\n')); };
+    setStatus('Reading the text…');
+    await pass(prepCanvas(bmp, 2400), 11);
+    await pass(prepCanvas(bmp, 2400), 6);
+    var text = mergeLines(chunks).join('\n');
+    if (!FreeText.findExpiry(text)) {                          // small dot-matrix print: try enlarged horizontal bands
+      setStatus('Looking closer for the expiry…');
+      var bands = [[0, 0, 1, 0.5], [0, 0.25, 1, 0.5], [0, 0.5, 1, 0.5]];
+      for (var i = 0; i < bands.length; i++) {
+        var b = bands[i]; await pass(prepCanvas(bmp, 2800, 0, Math.round(bmp.height * b[1]), bmp.width, Math.round(bmp.height * b[3])), 11);
+        text = mergeLines(chunks).join('\n'); if (FreeText.findExpiry(text)) break;
+      }
+    }
+    return text;
+  }
+  async function onTextPhoto(file) {
+    if (!file) return;
+    try {
+      var read = await ocrFile(file), box = $('freeText'), prev = box.value.trim();
+      box.value = prev ? prev + '\n' + read : read;
+      if (!read.trim()) { setStatus('No text found. Try again closer, square on, in good light, or type it.', 'err'); return; }
+      readText();
+    } catch (e) { setStatus('Could not read text from that photo: ' + e.message + '. You can type the text instead.', 'err'); }
+  }
+  $('textPhoto').addEventListener('change', function () { onTextPhoto(this.files[0]); this.value = ''; });
+  $('textChoose').addEventListener('change', function () { onTextPhoto(this.files[0]); this.value = ''; });
+  $('btnTextClear').addEventListener('click', function () { $('freeText').value = ''; });
+
+  /* ---------- copy buttons ---------- */
+  function copyText(t, ok) {
+    var done = function () { setStatus(ok, 'ok'); };
+    if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(t).then(done, function () { setStatus('Copy was blocked. Select the text and copy it.', 'err'); });
+    else { var ta = document.createElement('textarea'); ta.value = t; document.body.appendChild(ta); ta.select(); try { document.execCommand('copy'); done(); } catch (e) { setStatus('Copy was blocked. Select the text and copy it.', 'err'); } ta.remove(); }
+  }
+  function enterName() { return cur ? (cur.label ? cur.label.label : (LIST.length ? '' : typedName(cur))) : ''; }
+  function enterExp() { if (!cur || !cur.expiry) return ''; var p = cur.expiry.split('-'); return p[1] + '/' + p[0]; }
+  $('cpName').addEventListener('click', function () { copyText(enterName(), 'Copied the name.'); });
+  $('cpExp').addEventListener('click', function () { copyText(enterExp(), 'Copied the expiry.'); });
+  $('cpBoth').addEventListener('click', function () { copyText(enterName() + ' | exp ' + enterExp(), 'Copied name and expiry.'); });
 
   /* ---------- modes and wiring ---------- */
   function setMode(m) {
