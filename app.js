@@ -2,8 +2,9 @@
 (function () {
   'use strict';
   var $ = function (id) { return document.getElementById(id); };
-  var LS_LOG = 'packscan.log.v1', LS_MAP = 'packscan.map.v1';
-  var current = null;            // the parsed scan being shown
+  var LS_LOG = 'packscan.log.v2', LS_MAP = 'packscan.map.v1', LS_MEDS = 'packscan.meds.v1';
+  var cur = null;                // what is being identified
+  var LIST = [];                 // parsed MedTrack labels
   var stream = null, camTimer = null, camBusy = false, camSeen = {};
   var OPTS = { tryHarder: true, tryRotate: true, tryInvert: true, tryDownscale: true, maxNumberOfSymbols: 4 };
 
@@ -102,69 +103,176 @@
     } catch (e) { /* keep trying */ } finally { camBusy = false; }
   }
 
-  /* ---------- showing a result ---------- */
-  function kvRow(tbl, k, v, bold) {
-    var tr = document.createElement('tr'), a = document.createElement('td'), b = document.createElement('td');
-    a.textContent = k; b.textContent = v; if (bold !== false) b.className = 'val'; tr.appendChild(a); tr.appendChild(b); tbl.appendChild(tr);
+  /* ---------- MedTrack list ---------- */
+  function parseListText(text) {
+    var t = String(text).trim(), labels = [];
+    if (t[0] === '{' || t[0] === '[') {
+      try { var j = JSON.parse(t); labels = Array.isArray(j) ? j : (j.labels || []); } catch (e) { labels = []; }
+    } else labels = t.split(/\r?\n/).map(function (l) { return l.replace(/^"|"$/g, '').trim(); });
+    return labels.filter(function (l) { return typeof l === 'string' && l.indexOf('|') > 0; });
   }
-  function present(parsedList) {
-    var p = parsedList[0]; current = p;
+  function setList(labels) {
+    LIST = labels.map(FreeText.parseLabel);
+    $('listStatus').textContent = LIST.length ? LIST.length + ' lines loaded' : 'no list loaded';
+  }
+  $('fileList').addEventListener('change', function () {
+    var f = this.files[0]; this.value = ''; if (!f) return;
+    var rd = new FileReader();
+    rd.onload = function () {
+      var labels = parseListText(rd.result);
+      if (!labels.length) { setStatus('That file has no "Name | pack" lines. Expected the medications.json list or one "Name | 30 Tab" per line.', 'err'); return; }
+      if (!lsSet(LS_MEDS, labels)) { setStatus('List read, but this browser would not save it.', 'err'); }
+      setList(labels); setStatus('Loaded ' + labels.length + ' medication lines.', 'ok'); if (cur) renderAll();
+    };
+    rd.readAsText(f);
+  });
+  $('btnListClear').addEventListener('click', function () { try { localStorage.removeItem(LS_MEDS); } catch (e) {} setList([]); setStatus('List removed from this device.'); if (cur) renderAll(); });
+
+  /* ---------- the identified card ---------- */
+  function packText(l) { return l && l.packCount !== null ? (l.packCount + (l.packUnit ? ' ' + l.packUnit : '')) : ''; }
+  function row(tbl, k, v, src) {
+    var tr = document.createElement('tr'), a = document.createElement('td'), b = document.createElement('td');
+    a.textContent = k; b.className = 'val'; b.textContent = v || '—';
+    if (src && v) { var s = document.createElement('span'); s.className = 'src'; s.textContent = src; b.appendChild(s); }
+    tr.appendChild(a); tr.appendChild(b); tbl.appendChild(tr);
+  }
+  function startCur(kind) { return { kind: kind, gs: null, tx: null, label: null, labelSrc: '', code: '', expiry: '', expirySrc: '', lot: '', serial: '', cands: [], raw: '' }; }
+
+  function typedName(c) { return c.tx && c.tx.nameWords.length ? c.tx.nameWords.join(' ') : ''; }
+  function medName(c) { return c.label ? c.label.name : typedName(c); }
+  function doseOf(c) { return c.label && c.label.dose ? c.label.dose : (c.tx && c.tx.dose) || ''; }
+  function packOf(c) { return c.label && packText(c.label) ? packText(c.label) : (c.tx && c.tx.packCount !== null ? c.tx.packCount + ' ' + (c.tx.packUnit || '') : ''); }
+
+  function renderAll() {
+    var c = cur; if (!c) return;
     $('result').hidden = false;
-    var tbl = $('resTable'); tbl.textContent = '';
-    var badge = $('resBadge');
-    if (p.complete) { badge.textContent = 'Complete in one scan'; badge.className = 'badge ok'; }
-    else if (p.kind === 'product-only' || p.kind === 'gs1') { badge.textContent = 'Product only: add lot and expiry'; badge.className = 'badge part'; }
-    else { badge.textContent = 'Not a product code'; badge.className = 'badge bad'; }
-    kvRow(tbl, 'Code type', (p.kind === 'gs1' ? 'GS1 2D / data code' : (p.codeLabel || p.format || 'Unknown')) + (p.format ? ' (' + p.format + ')' : ''));
-    if (p.productCode) kvRow(tbl, 'Product code', p.productCode);
-    kvRow(tbl, 'Lot', p.lot || 'not in this code');
-    kvRow(tbl, 'Expiry', p.expiry ? p.expiry + (p.expiryRaw && /00$/.test(p.expiryRaw) ? ' (end of month)' : '') : 'not in this code');
-    kvRow(tbl, 'Serial number', p.serial || 'not in this code');
-    if (p.productionDate) kvRow(tbl, 'Made', p.productionDate);
-    p.warnings.forEach(function (w) { kvRow(tbl, 'Warning', w, true); });
-    $('completeBox').hidden = !(p.kind === 'product-only' || (p.kind === 'gs1' && !p.complete));
-    $('manLot').value = p.lot || ''; $('manExp').value = p.expiry ? p.expiry.slice(0, 7) : '';
-    var map = lsGet(LS_MAP, {}), known = p.productCode && map[p.productCode];
-    $('medInput').value = known || '';
-    $('addMsg').textContent = known ? 'Linked to ' + known + ' from an earlier scan.' : (p.productCode ? 'No MedTrack medication linked to this product code yet.' : ''); $('addMsg').className = 'status';
-    $('rawText').textContent = showGS(p.raw);
-    var o = $('others'); o.textContent = '';
-    parsedList.slice(1).forEach(function (q) { var d = document.createElement('p'); d.className = 'hint'; d.textContent = 'Also found: ' + (q.format || '') + ' ' + showGS(q.raw); o.appendChild(d); });
-    setStatus('Read ' + parsedList.length + ' code' + (parsedList.length > 1 ? 's' : '') + '.', 'ok');
-    $('result').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    var tbl = $('idTable'); tbl.textContent = '';
+    row(tbl, 'Medication', medName(c) || (c.kind === 'code' && !c.label ? 'not identified yet' : ''), c.label ? (c.labelSrc === 'linked' ? 'from your saved link' : 'chosen from the MedTrack list') : (typedName(c) ? 'as typed, not matched' : ''));
+    row(tbl, 'Dose', doseOf(c), c.label && c.label.dose ? 'from the MedTrack line' : (c.tx && c.tx.dose ? 'from the text' : ''));
+    row(tbl, 'Pack size', packOf(c), c.label && packText(c.label) ? 'from the MedTrack line' : (c.tx && c.tx.packCount !== null ? 'from the text' : ''));
+    row(tbl, 'Expiry', c.expiry, c.expiry ? c.expirySrc : '');
+    if (c.lot) row(tbl, 'Lot', c.lot);
+    if (c.serial) row(tbl, 'Serial number', c.serial, 'unique to this box');
+    if (c.code) row(tbl, 'Product code', c.code, c.gs && c.gs.codeLabel ? c.gs.codeLabel : (c.gs && c.gs.kind === 'gs1' ? 'GS1 data code' : ''));
+
+    // warnings
+    var w = $('warns'); w.textContent = '';
+    var add = function (t) { var d = document.createElement('div'); d.className = 'warn'; d.textContent = t; w.appendChild(d); };
+    if (c.gs) c.gs.warnings.forEach(add);
+    if (c.label && c.tx) {
+      if (c.tx.dose && c.label.dose && FreeText.normDose(c.tx.dose) !== FreeText.normDose(c.label.dose)) add('Dose differs: the text says ' + c.tx.dose + ', the MedTrack line says ' + c.label.dose + '.');
+      if (c.tx.packCount !== null && c.label.packCount !== null && c.tx.packCount !== c.label.packCount) add('Pack size differs: the box says ' + c.tx.packCount + ' ' + (c.tx.packUnit || '') + ', the MedTrack line says ' + packText(c.label) + '. Pick the right line, or ask for a new one to be added.');
+    }
+
+    // badge
+    var ok = !!(medName(c) && c.expiry), b = $('resBadge');
+    var needs = []; if (!c.label) needs.push('medication'); if (!c.expiry) needs.push('expiry');
+    if (ok && c.label) { b.textContent = 'Identified'; b.className = 'badge ok'; }
+    else if (ok) { b.textContent = 'Not matched to the list'; b.className = 'badge part'; }
+    else { b.textContent = 'Need: ' + needs.join(' and '); b.className = 'badge part'; }
+
+    // candidates and identify box
+    var showPick = !c.label || c.cands.length > 0;
+    $('pickBox').hidden = !showPick;
+    var cd = $('cands'); cd.textContent = '';
+    $('idLabel').hidden = !(c.kind === 'code' && !c.label);
+    $('rememberRow').hidden = !(c.kind === 'code' && c.code && (c.cands.length > 0 || c.label));
+    if (showPick) {
+      if (!LIST.length) { var n = document.createElement('p'); n.className = 'hint'; n.textContent = 'Load the MedTrack list (below) to match this to a medication line.'; cd.appendChild(n); }
+      c.cands.forEach(function (m) {
+        var bt = document.createElement('button'); bt.type = 'button'; bt.className = 'cand' + (c.label && c.label.label === m.label ? ' sel' : '');
+        bt.textContent = m.label + ' (' + m.score + '%)';
+        if (m.notes.length) { var s = document.createElement('small'); s.textContent = m.notes.join('; '); bt.appendChild(s); }
+        bt.addEventListener('click', function () { chooseLabel(m.label, 'chosen'); });
+        cd.appendChild(bt);
+      });
+      if (LIST.length && !c.cands.length && (c.kind === 'text' || c.tx)) { var h = document.createElement('p'); h.className = 'hint'; h.textContent = 'No close match in the MedTrack list. The text is kept as typed.'; cd.appendChild(h); }
+    }
+    $('pickTitle').textContent = c.label ? 'Other possible lines' : 'Which MedTrack line is this?';
+
+    // manual inputs
+    $('manualBox').hidden = !!(c.expiry && c.expirySrc !== 'typed' && c.lot);
+    if (!c.expiry) $('manExp').value = ''; else if (c.expirySrc === 'typed') $('manExp').value = c.expiry.slice(0, 7);
+    $('rawText').textContent = c.raw;
+    setStatus(ok && c.label ? 'Identified.' : 'Check the details below.', ok && c.label ? 'ok' : '');
   }
 
-  /* ---------- link, log ---------- */
-  function currentFields() {
-    var p = current; if (!p) return null;
-    var lot = (p.lot || $('manLot').value || '').trim();
-    var expiry = p.expiry;
-    if (!expiry && $('manExp').value) { var ym = $('manExp').value.split('-'); expiry = new Date(Date.UTC(+ym[0], +ym[1], 0)).toISOString().slice(0, 10); }
-    return { code: p.productCode || '', lot: lot, expiry: expiry || '', serial: p.serial || '', source: p.complete ? '2D scan' : (p.kind === 'gs1' || p.kind === 'product-only' ? 'barcode + typed' : 'raw') };
-  }
-  $('btnLink').addEventListener('click', function () {
-    if (!current || !current.productCode) { $('addMsg').textContent = 'Nothing to link: no product code in this scan.'; return; }
-    var v = $('medInput').value.trim(); if (!v) { $('addMsg').textContent = 'Choose a medication first.'; return; }
-    var map = lsGet(LS_MAP, {}); map[current.productCode] = v; lsSet(LS_MAP, map);
-    $('addMsg').textContent = 'Remembered: ' + current.productCode + ' is ' + v + '.'; $('addMsg').className = 'status ok';
-  });
-  $('btnAdd').addEventListener('click', function () {
-    var f = currentFields(); var msg = $('addMsg');
-    if (!f || !f.code) { msg.textContent = 'This scan has no product code, so it cannot be logged.'; msg.className = 'status err'; return; }
-    if (!f.lot || !f.expiry) { msg.textContent = 'Add the lot and the expiry before logging.'; msg.className = 'status err'; return; }
-    var log = lsGet(LS_LOG, []);
-    if (f.serial) {
-      var dup = log.filter(function (r) { return r.code === f.code && r.serial === f.serial; })[0];
-      if (dup) { msg.textContent = 'This exact box (serial ' + f.serial + ') was already logged at ' + dup.time + ' as ' + dup.mode + '. Not added.'; msg.className = 'status err'; return; }
+  function chooseLabel(labelStr, src) {
+    var p = FreeText.parseLabel(labelStr); cur.label = p; cur.labelSrc = src;
+    if (cur.kind === 'code' && cur.code && src === 'chosen' && $('remember').checked) {
+      var map = lsGet(LS_MAP, {}); map[cur.code] = labelStr; lsSet(LS_MAP, map);
     }
-    log.unshift({ time: (function () { var d = new Date(), p = function (n) { return ('0' + n).slice(-2); }; return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds()); })(), mode: $('mode').value, medication: $('medInput').value.trim(), code: f.code, lot: f.lot, expiry: f.expiry, serial: f.serial });
+    renderAll();
+  }
+
+  function runMatch(tx) {
+    cur.tx = tx; cur.cands = LIST.length ? FreeText.matchLabels(tx, LIST, 5) : [];
+    return cur.cands;
+  }
+
+  /* ---------- barcode flow ---------- */
+  function present(parsedList) {
+    var p = parsedList[0]; cur = startCur('code'); cur.gs = p; cur.raw = showGS(p.raw);
+    cur.code = p.productCode || ''; cur.lot = p.lot || ''; cur.serial = p.serial || '';
+    if (p.expiry) { cur.expiry = p.expiry; cur.expirySrc = 'from the code' + (p.expiryRaw && /00$/.test(p.expiryRaw) ? ' (end of month)' : ''); }
+    var o = $('others'); o.textContent = '';
+    parsedList.slice(1).forEach(function (q) { var d = document.createElement('p'); d.className = 'hint'; d.textContent = 'Also found: ' + (q.format || '') + ' ' + showGS(q.raw); o.appendChild(d); });
+    var map = lsGet(LS_MAP, {}), known = cur.code && map[cur.code];
+    if (known) { cur.label = FreeText.parseLabel(known); cur.labelSrc = 'linked'; }
+    $('idText').value = ''; $('manLot').value = cur.lot;
+    renderAll();
+    $('result').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+  $('idText').addEventListener('input', function () {
+    if (!cur) return; var tx = FreeText.parseFreeText(this.value); runMatch(tx);
+    if (tx.expiry && !cur.expiry) { cur.expiry = tx.expiry; cur.expirySrc = 'from the text'; }
+    renderAll();
+  });
+
+  /* ---------- free-text flow ---------- */
+  function readText() {
+    var t = $('freeText').value; if (!t.trim()) { setStatus('Type or paste some text first.', 'err'); return; }
+    var tx = FreeText.parseFreeText(t); cur = startCur('text'); cur.raw = t; cur.lot = tx.lot || '';
+    runMatch(tx);
+    if (tx.expiry) { cur.expiry = tx.expiry; cur.expirySrc = 'from the text (end of month)'; }
+    var top = cur.cands[0], second = cur.cands[1];
+    if (top && top.score >= 90 && (!second || top.score - second.score >= 10)) { cur.label = top.parsed; cur.labelSrc = 'chosen'; }
+    $('manLot').value = cur.lot; renderAll(); $('result').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+  $('btnParse').addEventListener('click', readText);
+
+  function readTyped() { var t = $('typed').value; if (!t.trim()) return; present(interpret([{ text: t.replace(/\\x1d|␝/g, '\x1d'), format: 'typed' }])); $('typed').value = ''; }
+  $('btnRead').addEventListener('click', readTyped);
+  $('typed').addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); readTyped(); } });
+
+  /* ---------- manual expiry and lot ---------- */
+  $('manExp').addEventListener('change', function () {
+    if (!cur) return; if (!this.value) { if (cur.expirySrc === 'typed') { cur.expiry = ''; cur.expirySrc = ''; } renderAll(); return; }
+    var ym = this.value.split('-'); cur.expiry = new Date(Date.UTC(+ym[0], +ym[1], 0)).toISOString().slice(0, 10); cur.expirySrc = 'typed'; renderAll();
+  });
+  $('manLot').addEventListener('input', function () { if (cur) cur.lot = this.value.trim(); });
+
+  /* ---------- log ---------- */
+  $('btnAdd').addEventListener('click', function () {
+    var msg = $('addMsg'), c = cur; if (!c) return;
+    if (!medName(c)) { msg.textContent = 'Identify the medication first.'; msg.className = 'status err'; return; }
+    if (!c.expiry) { msg.textContent = 'Add the expiry first.'; msg.className = 'status err'; return; }
+    var log = lsGet(LS_LOG, []);
+    if (c.serial) {
+      var dup = log.filter(function (r) { return r.code === c.code && r.serial === c.serial; })[0];
+      if (dup) { msg.textContent = 'This exact box (serial ' + c.serial + ') was already logged at ' + dup.time + ' as ' + dup.mode + '. Not added.'; msg.className = 'status err'; return; }
+    }
+    var d = new Date(), p2 = function (n) { return ('0' + n).slice(-2); };
+    var onBox = c.tx && c.tx.packCount !== null ? c.tx.packCount + ' ' + (c.tx.packUnit || '') : '';
+    log.unshift({ time: d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate()) + ' ' + p2(d.getHours()) + ':' + p2(d.getMinutes()) + ':' + p2(d.getSeconds()),
+      mode: $('mode').value, medication: medName(c), dose: doseOf(c), pack: c.label ? packText(c.label) : '', onBox: onBox, expiry: c.expiry, lot: c.lot, code: c.code, serial: c.serial, matched: c.label ? 'yes' : 'no' });
     lsSet(LS_LOG, log); renderLog(); msg.textContent = 'Logged.'; msg.className = 'status ok';
   });
   function renderLog() {
     var log = lsGet(LS_LOG, []), tb = $('logTable').querySelector('tbody'); tb.textContent = '';
     log.forEach(function (r) {
       var tr = document.createElement('tr');
-      [r.time, r.mode, r.medication || '(not linked)', r.code, r.lot, r.expiry, r.serial || ''].forEach(function (t) { var td = document.createElement('td'); td.textContent = t; tr.appendChild(td); });
+      [r.time, r.mode, r.medication, r.dose, r.pack, r.onBox, r.expiry, r.lot, r.code, r.serial].forEach(function (t) { var td = document.createElement('td'); td.textContent = t || ''; tr.appendChild(td); });
       tb.appendChild(tr);
     });
     $('logEmpty').hidden = log.length > 0;
@@ -172,7 +280,8 @@
   $('btnCsv').addEventListener('click', function () {
     var log = lsGet(LS_LOG, []); if (!log.length) return;
     var q = function (s) { s = String(s == null ? '' : s); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
-    var rows = [['time', 'movement', 'medication', 'product_code', 'lot', 'expiry', 'serial']].concat(log.map(function (r) { return [r.time, r.mode, r.medication, r.code, r.lot, r.expiry, r.serial]; }));
+    var rows = [['time', 'movement', 'medication', 'dose', 'pack_size', 'pack_on_box', 'expiry', 'lot', 'product_code', 'serial', 'matched_to_list']]
+      .concat(log.map(function (r) { return [r.time, r.mode, r.medication, r.dose, r.pack, r.onBox, r.expiry, r.lot, r.code, r.serial, r.matched]; }));
     var a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([rows.map(function (r) { return r.map(q).join(','); }).join('\n')], { type: 'text/csv' }));
     a.download = 'pack-scan-log.csv'; document.body.appendChild(a); a.click(); a.remove();
   });
@@ -181,18 +290,21 @@
     lsSet(LS_LOG, []); renderLog(); b.dataset.sure = ''; b.textContent = 'Clear';
   });
 
-  /* ---------- wiring ---------- */
+  /* ---------- modes and wiring ---------- */
+  function setMode(m) {
+    var code = m === 'code';
+    $('tabCode').classList.toggle('on', code); $('tabText').classList.toggle('on', !code);
+    $('tabCode').setAttribute('aria-selected', code); $('tabText').setAttribute('aria-selected', !code);
+    $('paneCode').hidden = !code; $('paneText').hidden = code; if (!code) stopCam();
+  }
+  $('tabCode').addEventListener('click', function () { setMode('code'); });
+  $('tabText').addEventListener('click', function () { setMode('text'); });
   $('btnCam').addEventListener('click', startCam);
   $('btnStop').addEventListener('click', function () { stopCam(); setStatus('Camera stopped.'); });
   $('filePhoto').addEventListener('change', function () { onFile(this.files[0]); this.value = ''; });
   $('fileChoose').addEventListener('change', function () { onFile(this.files[0]); this.value = ''; });
-  function readTyped() { var t = $('typed').value; if (!t.trim()) return; present(interpret([{ text: t.replace(/\\x1d|␝/g, '\x1d'), format: 'typed' }])); $('typed').value = ''; }
-  $('btnRead').addEventListener('click', readTyped);
-  $('typed').addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); readTyped(); } });
 
-  fetch('medications.json').then(function (r) { return r.json(); }).then(function (d) {
-    var dl = $('medList'); (d.labels || []).forEach(function (l) { var o = document.createElement('option'); o.value = l; dl.appendChild(o); });
-  }).catch(function () { /* list is optional */ });
+  setList(lsGet(LS_MEDS, []));
   renderLog();
-  window.PackScan = { present: present, interpret: interpret, decodeImageFile: decodeImageFile };
+  window.PackScan = { present: present, interpret: interpret, decodeImageFile: decodeImageFile, readText: readText };
 })();

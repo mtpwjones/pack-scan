@@ -26,3 +26,10 @@ table{border-collapse:collapse;width:100%}
 pre{white-space:pre-wrap;word-break:break-all;background:var(--bg);padding:8px;border-radius:6px;font-size:.8rem}
 details{margin-top:8px}
 [hidden]{display:none!important}
+.tabs{display:flex;gap:6px;margin:12px 0 0}.tab{flex:1;justify-content:center;border-radius:10px 10px 0 0}.tab.on{background:var(--acc);color:var(--accfg);border-color:var(--acc);font-weight:600}
+textarea{font:inherit;padding:.55rem .6rem;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--fg);width:100%;resize:vertical}
+h3{font-size:.95rem;margin:12px 0 6px}
+.cand{display:block;width:100%;text-align:left;margin:4px 0;padding:.5rem .7rem;line-height:1.3}.cand small{display:block;color:var(--mute)}.cand.sel{border-color:var(--acc);box-shadow:0 0 0 2px var(--acc)}
+.warn{background:var(--warn);color:var(--warnfg);border-radius:8px;padding:8px 10px;margin:8px 0;font-size:.88rem}
+label.check{flex-direction:row;align-items:center;gap:8px;margin-top:8px}label.check input{width:auto;min-height:0}
+.src{display:block;font-weight:400;color:var(--mute);font-size:.75rem}
