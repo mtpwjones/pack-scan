@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pack Scan</title>
+<meta name="description" content="Prototype: scan a medicine pack's barcode or 2D code and read product, lot, expiry and serial.">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <h1>Pack Scan</h1>
+  <p class="sub">Prototype. Scan a medicine pack and read its product code, lot, expiry and serial number. Nothing is sent anywhere; the scan log stays on this device.</p>
+
+  <section class="card">
+    <div class="row">
+      <button id="btnCam" class="primary" type="button">Scan with camera</button>
+      <label class="btn" for="filePhoto">Take photo<input id="filePhoto" type="file" accept="image/*" capture="environment" hidden></label>
+      <label class="btn" for="fileChoose">Choose image<input id="fileChoose" type="file" accept="image/*" hidden></label>
+    </div>
+    <div id="camBox" hidden>
+      <video id="video" playsinline muted></video>
+      <div class="row"><button id="btnStop" type="button">Stop camera</button></div>
+    </div>
+    <div class="row typed">
+      <input id="typed" type="text" placeholder="Or type or paste a code (hand scanners type into here)" autocomplete="off" inputmode="text">
+      <button id="btnRead" type="button">Read</button>
+    </div>
+    <p id="status" class="status" role="status">Ready.</p>
+  </section>
+
+  <section id="result" class="card" hidden>
+    <div class="row between"><h2 id="resTitle">Result</h2><span id="resBadge" class="badge"></span></div>
+    <table class="kv" id="resTable"></table>
+    <div id="completeBox" hidden>
+      <p class="hint">This code holds the product only. Add the printed lot and expiry:</p>
+      <div class="row">
+        <label>Lot <input id="manLot" type="text" autocomplete="off" placeholder="e.g. KV033"></label>
+        <label>Expiry <input id="manExp" type="month"></label>
+      </div>
+    </div>
+    <div class="row">
+      <label class="grow">MedTrack medication and pack
+        <input id="medInput" list="medList" type="text" autocomplete="off" placeholder="Start typing a medication">
+      </label>
+      <button id="btnLink" type="button">Remember this link</button>
+    </div>
+    <datalist id="medList"></datalist>
+    <div class="row">
+      <label>Movement
+        <select id="mode"><option>Receive</option><option>Transfer out</option><option>Dispense</option><option>Count</option></select>
+      </label>
+      <button id="btnAdd" class="primary" type="button">Add to log</button>
+    </div>
+    <p id="addMsg" class="status"></p>
+    <details><summary>Raw scan text</summary><pre id="rawText"></pre><div id="others"></div></details>
+  </section>
+
+  <section class="card">
+    <div class="row between"><h2>Scan log</h2>
+      <span><button id="btnCsv" type="button">Download CSV</button> <button id="btnClear" type="button">Clear</button></span></div>
+    <div class="scroll"><table id="logTable"><thead><tr><th>Time</th><th>Movement</th><th>Medication</th><th>Product code</th><th>Lot</th><th>Expiry</th><th>Serial</th></tr></thead><tbody></tbody></table></div>
+    <p id="logEmpty" class="hint">Nothing logged yet.</p>
+  </section>
+</main>
+<script src="vendor/zxing-reader.iife.js"></script>
+<script src="gs1.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
